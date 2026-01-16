@@ -1,5 +1,5 @@
 --========================
--- cr-pause | client.lua
+-- moritz-pause | client.lua
 --========================
 
 -- === Pause title ===
@@ -7,7 +7,15 @@ local function ApplyTextReplacements()
     local replacer = { ["TITLE"] = "FE_THDR_GTAO" }
     for key, entry in pairs(replacer) do
         if Config.Header[key] then
-            Citizen.InvokeNative(0x32CA01C3, entry, Config.Header[key])
+            local txt = tostring(Config.Header[key])
+
+            -- Wenn es ein "native"-Label ist (ALL_CAPS / Unterstriche), lassen wir es.
+            -- Ansonsten faerben wir es rot wie die anderen Neuberg-Elemente.
+            if not txt:match("^[A-Z0-9_]+$") and not txt:find("~") then
+                txt = "~r~" .. txt .. "~s~"
+            end
+
+            Citizen.InvokeNative(0x32CA01C3, entry, txt)
         end
     end
 end
@@ -16,8 +24,30 @@ end
 local filterEnabled = false
 local ESX, QBCore
 local cached = {
-    name = nil, bank = 0, cash = 0, phone = "N/A", job = "Unemployed",
+    name = nil, bank = 0, cash = 0, job = "Unemployed",
 }
+
+local function FormatMoney(n)
+    n = tonumber(n) or 0
+    local s = tostring(math.floor(n))
+    local out = s
+    while true do
+        out, k = out:gsub("^(%-?%d+)(%d%d%d)", "%1.%2")
+        if k == 0 then break end
+    end
+    return out
+end
+
+local function GetCashFromOxInventory()
+    if GetResourceState('ox_inventory') ~= 'started' then return nil end
+    if not exports or not exports.ox_inventory or not exports.ox_inventory.Search then return nil end
+
+    local ok, count = pcall(function()
+        return exports.ox_inventory:Search('count', 'money')
+    end)
+    if not ok then return nil end
+    return tonumber(count) or 0
+end
 
 -- === Helpers ===
 local function EnsureESX()
@@ -89,12 +119,11 @@ local function RefreshFromESX()
     end
     cached.bank, cached.cash = bank, cash
 
-    -- Phone (handles multiple phones/forks)
-    cached.phone =
-        (x.get and (x.get('phone_number') or x.get('phone'))) or
-        (x.metadata and (x.metadata.phone_number or x.metadata.phone)) or
-        (x.variables and x.variables.phone_number) or
-        "N/A"
+    -- Prefer ox_inventory cash, if available
+    local oxCash = GetCashFromOxInventory()
+    if oxCash ~= nil then
+        cached.cash = oxCash
+    end
 
     -- Job
     cached.job = (x.job and (x.job.label or x.job.name)) or "Unemployed"
@@ -109,7 +138,12 @@ local function RefreshFromQB()
     cached.name = (p.charinfo and (p.charinfo.firstname .. " " .. p.charinfo.lastname)) or GetPlayerName(PlayerId())
     cached.bank = (p.money and p.money["bank"]) or 0
     cached.cash = (p.money and p.money["cash"]) or 0
-    cached.phone = (p.charinfo and p.charinfo.phone) or "N/A"
+
+    -- Prefer ox_inventory cash, if available
+    local oxCash = GetCashFromOxInventory()
+    if oxCash ~= nil then
+        cached.cash = oxCash
+    end
     cached.job = (p.job and (p.job.label or p.job.name)) or "Unemployed"
 end
 
@@ -145,7 +179,7 @@ local function ApplyFilter(duration)
     end
 
     if Config.DisplayLogo then
-        SendNUIMessage({ display = true })
+        SendNUIMessage({ display = true, replaceMugshot = Config.ReplaceMugshotWithLogo == true })
     end
 end
 
@@ -221,15 +255,16 @@ CreateThread(function()
             -- opportunistically refresh (handles late-loaded phone/job)
             if not lastOpen then RefreshCached() end
 
-            local characterBalance = ("Bank: $%s | Cash: $%s"):format(cached.bank or 0, cached.cash or 0)
-            local idAndPhoneNumber = ("ID: %s | Phone: %s"):format(GetPlayerServerId(PlayerId()), cached.phone or "N/A")
-            local topRowText = ("%s - %s"):format(cached.name or "Unknown", cached.job or "Unemployed")
+            local id = GetPlayerServerId(PlayerId())
+            local line1 = ("%s  •  %s"):format(cached.name or "Unknown", id)
+            local line2 = ("%s"):format(cached.job or "Unemployed")
+            local line3 = ("Bank: $%s  •  Bargeld: $%s"):format(FormatMoney(cached.bank), FormatMoney(cached.cash))
 
             SetScriptGfxDrawBehindPausemenu(true)
             BeginScaleformMovieMethodOnFrontendHeader("SET_HEADING_DETAILS")
-            PushScaleformMovieFunctionParameterString(topRowText)
-            PushScaleformMovieFunctionParameterString(characterBalance)
-            PushScaleformMovieFunctionParameterString(idAndPhoneNumber)
+            PushScaleformMovieFunctionParameterString(line1)
+            PushScaleformMovieFunctionParameterString(line2)
+            PushScaleformMovieFunctionParameterString(line3)
             EndScaleformMovieMethod()
         end
 
